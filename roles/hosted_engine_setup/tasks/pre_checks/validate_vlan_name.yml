@@ -1,0 +1,40 @@
+---
+- name: Get VLAN devices parent and id as naming convention pattern
+  shell: nmcli -g VLAN.PARENT,VLAN.ID device show {{ vlan_device.nic_if.nic }} | paste -sd "."
+  when: vlan_device.ansible_facts is defined and vlan_device.ansible_facts.is_vlan == true
+  with_items:
+    - "{{ vlan_list.results | reject('skipped') | list }}"
+  loop_control:
+    loop_var: vlan_device
+  register: vlan_pattern_list
+- debug: var=vlan_pattern_list
+- name: Filter VLAN devices with bad naming
+  set_fact:
+    bb_vlan_list: "{{ vlan_pattern.vlan_device.nic_if.nic }}"
+  when: vlan_pattern.vlan_device.nic_if.nic == vlan_pattern.stdout
+  with_items:
+    - "{{ vlan_pattern_list.results }}"
+  loop_control:
+    loop_var: vlan_pattern
+  register: bb_vlan_filtered
+- debug: var=bb_vlan_filtered
+- name: Generate bad VLAN devices list
+  set_fact:
+    filtered_vlan_devices: "{{ bb_vlan_filtered.results | select('skipped') | map(attribute='vlan_pattern.vlan_device.nic_if.nic') | list }}"
+- debug: var=filtered_vlan_devices
+- name: Filter bad VLAN devices interface types
+  set_fact:
+    otopi_host_net: "{{ host_net | difference(filtered_vlan_devices) }}"
+  register: otopi_host_net
+- debug: var=otopi_host_net
+- name: Updating host_net list
+  set_fact:
+    host_net: "{{ otopi_host_net.ansible_facts.otopi_host_net }}"
+- debug: var=host_net
+- name: Fail if only VLAN devices on unsupported bond mode are available
+  fail:
+    msg: >-
+      VLAN devices {{ filtered_vlan_devices | join(',') }} are present.
+      The VLAN devices configured with invalid naming convention,
+      ( correct pattern: <VLAN_PARENT_DEVICE.VLAN_ID> ), and it is unsupported.
+  when: ( otopi_host_net.ansible_facts.otopi_host_net | length == 0)

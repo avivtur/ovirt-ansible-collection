@@ -18,6 +18,7 @@
     loop_var: vlan_device
   register: vlan_parent_interface
 - debug: var=vlan_parent_interface
+- import_tasks: validate_vlan_name.yml
 - name: Get parent types
   shell: nmcli -g GENERAL.TYPE device show {{ vlan_parent.stdout }}
   when: vlan_parent.skipped is undefined and vlan_parent.stdout is defined
