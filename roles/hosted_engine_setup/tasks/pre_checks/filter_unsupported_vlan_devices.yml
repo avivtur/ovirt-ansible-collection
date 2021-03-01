@@ -1,0 +1,81 @@
+---
+- name: Check for VLAN devices
+  set_fact:
+    is_vlan: "{{ nic_if.stdout == 'vlan' }}"
+  when: nic_if.stdout.find('vlan') != -1
+  with_items:
+    - "{{ interface_types.results }}"
+  loop_control:
+    loop_var: nic_if
+  register: vlan_list
+- debug: var=vlan_list
+- name: Check for VLAN devices parents
+  shell: nmcli -g VLAN.PARENT device show {{ vlan_device.nic_if.nic }}
+  when: vlan_device.ansible_facts is defined and vlan_device.ansible_facts.is_vlan == true
+  with_items:
+    - "{{ vlan_list.results | reject('skipped') | list }}"
+  loop_control:
+    loop_var: vlan_device
+  register: vlan_parent_interface
+- debug: var=vlan_parent_interface
+- name: Get parent types
+  shell: nmcli -g GENERAL.TYPE device show {{ vlan_parent.stdout }}
+  when: vlan_parent.skipped is undefined and vlan_parent.stdout is defined
+  with_items:
+    - "{{ vlan_parent_interface.results }}"
+  loop_control:
+    loop_var: vlan_parent
+  register: vlan_parent_types
+- debug: var=vlan_parent_types
+- name: Check for bond parent of vlan
+  set_fact:
+    bond_parent: "{{ vlan_parent_type.vlan_parent.stdout }}"
+  when: vlan_parent_type.skipped is undefined and vlan_parent_type.stdout is defined and vlan_parent_type.stdout == "bond"
+  with_items:
+    - "{{ vlan_parent_types.results | reject('skipped') | list }}"
+  loop_control:
+    loop_var: vlan_parent_type
+  register: vlan_bond_list
+- debug: var=vlan_bond_list
+- name: Check if bond parent of vlan is in supported mode
+  vars:
+    acceptable_bond_modes: ['active-backup', 'balance-xor', 'broadcast', '802.3ad']
+  set_fact:
+    bond_parent_mode: "{{ hostvars[inventory_hostname]['ansible_' + vlan_bond_device.ansible_facts.bond_parent]['mode'] }}"
+    vlan_bond_valid_if: "{{ vlan_bond_device.vlan_parent_type.vlan_parent.vlan_device.nic_if.nic }}"
+    is_valid_parent_mode: "{{ hostvars[inventory_hostname]['ansible_' + vlan_bond_device.ansible_facts.bond_parent]['mode'] in acceptable_bond_modes }}"
+  with_items: "{{ vlan_bond_list.results | reject('skipped') | list }}"
+  loop_control:
+    loop_var: vlan_bond_device
+  register: vlan_bond_valid_mode_list
+- debug: var=vlan_bond_valid_mode_list
+- name: Collect VLAN devices with bad bond parent mode
+  set_fact:
+    bbm_vlan: "{{ vlan_bond_item.ansible_facts.vlan_bond_valid_if }}"
+  when: vlan_bond_item.ansible_facts.is_valid_parent_mode == false
+  with_items:
+    - "{{ vlan_bond_valid_mode_list.results }}"
+  loop_control:
+    loop_var: vlan_bond_item
+  register: filtered_bbm_vlan
+- debug: var=filtered_bbm_vlan
+- name: Generate invalid VLANs list
+  set_fact:
+    bad_vlan_bond_list: "{{ filtered_bbm_vlan.results | reject('skipped') | map(attribute='vlan_bond_item.ansible_facts.vlan_bond_valid_if') | list }}"
+- debug: var=bad_vlan_bond_list
+- name: Filter VLANs interface types
+  set_fact:
+    otopi_host_net: "{{ host_net | difference(bad_vlan_bond_list) }}"
+  register: otopi_host_net
+- debug: var=otopi_host_net
+- name: Updating host_net list
+  set_fact:
+    host_net: "{{ otopi_host_net.ansible_facts.otopi_host_net }}"
+- debug: var=host_net
+- name: Fail if only VLAN devices on unsupported bond mode are available
+  fail:
+    msg: >-
+      Only VLAN devices {{ bad_vlan_bond_list | join(',') }} are present.
+      The VLAN devices configured on bond interface with unsupported bond mode,
+      and it is unsupported.
+  when: ( otopi_host_net.ansible_facts.otopi_host_net | length == 0)
